@@ -1,25 +1,13 @@
-import { FirebaseDbParser } from "./fns/firebase-db-parser";
-import { FirebaseDbSerializer } from "./fns/firebase-db-serializer";
 import { notNull } from "./fns/firebase-db-util";
 
-import { database } from "firebase-admin";
+import * as admin from "firebase-admin";
 import * as path from "path";
 
-const _serialize = data => FirebaseDbSerializer.serialize(data);
-const _parseSnapshot = (snapshot: database.DataSnapshot) =>
-  FirebaseDbParser.parse(snapshot.val());
 
-// Testing hook
-const testRef = "/__test__";
-export const hookPathValue = (pathValue: string): string => {
-  if (process.env.NODE_ENV != "test") return pathValue;
-  return path.posix.join(testRef, pathValue);
-};
-
-let _database: database.Database;
+let _database: FirebaseFirestore.Firestore;
 
 export class FirebaseDb {
-  public static connect(database: database.Database) {
+  public static connect(database: FirebaseFirestore.Firestore) {
     _database = database;
   }
 
@@ -36,19 +24,16 @@ export class FirebaseDb {
     notNull(data, "data");
     notNull(pathValue, "pathValue");
 
-    pathValue = hookPathValue(pathValue);
-
     const db = this.getDb();
-    const insertRef = db.ref(pathValue).push();
-    const id = insertRef.key;
+    const id = this.generateID();
 
-    const item = {
-      ..._serialize(data),
-      id: id
-    };
-    return insertRef.set(item).then(() => {
-      return Promise.resolve(id);
-    });
+    return db.collection(pathValue)
+      .doc(id)
+      .set({
+        ...data,
+        id
+      })
+      .then(() => id);
   }
 
   static insertWithId(
@@ -60,18 +45,10 @@ export class FirebaseDb {
     notNull(pathValue, "pathValue");
     notNull(id, "id");
 
-    pathValue = hookPathValue(pathValue);
-
     const db = this.getDb();
-    const insertRef = db.ref(pathValue).child(id);
 
-    const item = {
-      ..._serialize(data),
-      id: id
-    };
-    return insertRef.set(item).then(() => {
-      return Promise.resolve(id);
-    });
+    return db.collection(pathValue).doc(id).set(data)
+      .then(() => id);
   }
 
   static insertAndGet(pathValue: string, data: any): Promise<any> {
@@ -82,57 +59,45 @@ export class FirebaseDb {
 
   static exists(pathValue: string, id?: string): Promise<boolean> {
     notNull(pathValue, "pathValue");
-    pathValue = hookPathValue(pathValue);
     if (id) {
       pathValue = path.posix.join(pathValue, id);
     }
     const db = this.getDb();
-    const ref = db.ref(pathValue);
-    return ref.once("value").then(snapshot => {
-      const data = snapshot.val();
-      if (!data) {
-        return Promise.resolve(false);
-      }
-      return Promise.resolve(true);
-    });
+    return db.doc(pathValue).get()
+      .then(doc => doc.exists)
   }
 
   static get(pathValue: string, id: string): Promise<any> {
     notNull(id, "id");
     notNull(pathValue, "pathValue");
 
-    pathValue = hookPathValue(pathValue);
-
     pathValue = path.posix.join(pathValue, id);
     const db = this.getDb();
-    const ref = db.ref(pathValue);
-    return ref.once("value").then((snapshot: database.DataSnapshot) => {
-      if (!snapshot.val()) {
-        // throw new ReferenceError(`unknown id(${id}) for ref(${pathValue})`)
-        // return Promise.reject(`unknown id(${id}) for ref(${pathValue})`);
-        return Promise.reject(
-          new ReferenceError(`unknown id(${id}) for ref(${pathValue})`)
-        );
-      }
-      return Promise.resolve(_parseSnapshot(snapshot));
-    });
+
+    return db.doc(pathValue).get()
+      .then(snapshot => {
+        if (!snapshot.exists) {
+          return Promise.reject(
+            new ReferenceError(`unknown id(${id}) for ref(${pathValue})`)
+          );
+        }
+        return snapshot.data();
+      });
   }
 
   static getAll(pathValue: string): Promise<any[]> {
     notNull(pathValue, "pathValue");
 
-    pathValue = hookPathValue(pathValue);
-
     const db = this.getDb();
-    const ref = db.ref(pathValue);
-    return ref.once("value").then((snapshot: database.DataSnapshot) => {
-      const results = [];
-      snapshot.forEach(childSnapshot => {
-        results.push(_parseSnapshot(childSnapshot));
-        return false;
+    
+    return db.collection(pathValue).get()
+      .then(snapshot => {
+        const result = [];
+        snapshot.forEach(doc => {
+          result.push(doc.data());
+        });
+        return result;
       });
-      return Promise.resolve(results);
-    });
   }
 
   static update(pathValue: string, id: string, data: any): Promise<void> {
@@ -140,32 +105,26 @@ export class FirebaseDb {
     notNull(pathValue, "pathValue");
     notNull(data, "data");
 
-    return this.get(pathValue, id).then(() => {
-      pathValue = hookPathValue(pathValue);
+    return this.get(pathValue, id)
+      .then(() => {
 
-      pathValue = path.posix.join(pathValue, id);
-      const db = this.getDb();
-      const ref = db.ref(pathValue);
-      const item = {
-        ..._serialize(data),
-        id: id
-      };
-      return ref.set(item);
-    });
+        pathValue = path.posix.join(pathValue, id);
+        const db = this.getDb();
+        return db.doc(pathValue).update({
+          ...data,
+          id
+        })
+          .then(() => {});
+      });
   }
 
   static set(pathValue: string, data: any): Promise<void> {
     notNull(pathValue, "pathValue");
     notNull(data, "data");
 
-    pathValue = hookPathValue(pathValue);
-
     const db = this.getDb();
-    const ref = db.ref(pathValue);
-    const item = {
-      ..._serialize(data)
-    };
-    return ref.set(item);
+    return db.doc(pathValue).set(data)
+      .then(() => {});
   }
 
   static updateFields(
@@ -177,19 +136,18 @@ export class FirebaseDb {
     notNull(pathValue, "pathValue");
     notNull(fields, "fields");
 
-    return this.get(pathValue, id).then(originalItem => {
-      pathValue = hookPathValue(pathValue);
+    return this.get(pathValue, id)
+      .then(originalItem => {
 
-      pathValue = path.posix.join(pathValue, id);
-      const db = this.getDb();
-      const ref = db.ref(pathValue);
-      const item = {
-        ..._serialize(originalItem),
-        ...fields,
-        id: id
-      };
-      return ref.set(item);
-    });
+        pathValue = path.posix.join(pathValue, id);
+        const db = this.getDb();
+        return db.doc(pathValue).set({
+          ...originalItem,
+          ...fields,
+          id
+        })
+          .then(() => {});
+      });
   }
 
   static updateFieldsAndGet(
@@ -212,19 +170,41 @@ export class FirebaseDb {
     notNull(id, "id");
     notNull(pathValue, "pathValue");
 
-    return this.get(pathValue, id).then(() => {
-      pathValue = path.posix.join(pathValue, id);
-      return this.deleteAll(pathValue);
-    });
+    pathValue = path.posix.join(pathValue, id);
+
+    const db = this.getDb();
+    return db.doc(pathValue).get()
+      .then(snapshot => {
+        if (!snapshot.exists) {
+          return Promise.reject(
+            new ReferenceError(`unknown id(${id}) for ref(${pathValue})`)
+          );
+        }
+        return snapshot.ref.delete();
+      })
+      .then(() => {});
   }
 
   static deleteAll(pathValue: string): Promise<void> {
     notNull(pathValue, "pathValue");
 
-    pathValue = hookPathValue(pathValue);
-
     const db = this.getDb();
-    const ref = db.ref(pathValue);
-    return ref.remove();
+    return db.collection(pathValue).get()
+      .then(snapshot => {
+        const promises = snapshot.docs.map(doc => doc.ref.delete());
+        return Promise.all(promises);
+      })
+      .then(() => {});
+  }
+
+  /**
+   * This function was grabbed from firestore's console source code
+   */
+  static generateID(): string {
+    let a = '';
+    for (let b = 0; 20 > b; b++) {
+      a+= 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'.charAt(Math.floor(62 * Math.random()));
+    }
+    return a;
   }
 }

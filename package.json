@@ -10,8 +10,8 @@
   "scripts": {
     "build": "webpack --env dev && webpack --env build",
     "serve": "webpack --progress --colors --watch --env dev",
-    "test": "mocha --recursive --require ts-node/register --colors ./**/*.spec.ts",
-    "test:watch": "mocha --recursive --require ts-node/register --colors -w ./**/*.spec.ts",
+    "test": "mocha --timeout 10000 --recursive --require ts-node/register --colors ./**/*.spec.ts",
+    "test:watch": "mocha --timeout 10000 --recursive --require ts-node/register --colors -w ./**/*.spec.ts",
     "doc:gen": "typedoc --out dist/docs --target es6 --theme minimal --mode file src --exclude \"**/*.spec.ts\" --excludeNotExported",
     "doc:deploy": "ts-node tools/gh-pages-publish"
   },
@@ -38,7 +38,7 @@
     "path": "0.12.7"
   },
   "peerDependencies": {
-    "firebase-admin": ">=5.2.1 <6.0.0"
+    "firebase-admin": ">=5.12.1 <6.0.0"
   },
   "devDependencies": {
     "@types/chai": "4.0.4",
@@ -63,7 +63,7 @@
     "chai-string": "1.4.0",
     "coveralls": "3.0.0",
     "dotenv": "4.0.0",
-    "firebase-admin": "5.2.1",
+    "firebase-admin": "5.12.1",
     "fork-ts-checker-webpack-plugin": "0.2.10",
     "json-loader": "0.5.7",
     "mocha": "3.5.3",

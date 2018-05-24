@@ -19,55 +19,51 @@ process.env.NODE_ENV = "test";
 
 require("dotenv").config();
 
-const testRefPrefix = "__test__";
-
 describe("FirebaseDb", () => {
   let adminInitStub, configStub;
   let databaseStub;
   let refStub, pushStub;
 
-  const testRef = "ref";
-  const fetchFromDatabase = (id: string): Promise<any> => {
-    const db = admin.database();
-    const refValue = path.posix.join(testRefPrefix, testRef, id);
-    return db
-      .ref(refValue)
-      .once("value")
+  const testCollection = "__testCollection";
+  const fetchDocument = (id: string): Promise<any> => {
+    const refValue = path.posix.join(testCollection, id);
+
+    return admin.firestore()
+      .doc(refValue)
+      .get()
       .then(snapshot => {
-        return Promise.resolve(snapshot.val());
+        return snapshot.data()
       });
   };
-  const fetchRefFromDatabase = (): Promise<any> => {
-    const db = admin.database();
-    const ref = path.posix.join(testRefPrefix, testRef);
-    return db
-      .ref(ref)
-      .once("value")
+  const fetchAllDocuments = (): Promise<any[]> => {;
+    return admin.firestore()
+      .collection(testCollection)
+      .get()
       .then(snapshot => {
-        return Promise.resolve(snapshot.val());
+        const docs = [];
+        snapshot.forEach(doc => {
+          docs.push(doc.data());
+        })
+        return docs;
       });
   };
   const clearDb = async () => {
-    const db = admin.database();
-    await db.ref(testRefPrefix).remove();
+    return admin.firestore().collection(testCollection).get()
+      .then(snapshot => {
+        const promises = snapshot.docs.map(doc => doc.ref.delete());
+        return Promise.all(promises);
+      })
   };
 
   before(() => {
     const serviceAccount = require("./../../secrets/firebase-adminsdk.json");
-    admin.initializeApp(
-      {
-        credential: admin.credential.cert(serviceAccount),
-        databaseURL: process.env.FIREBASE_DATABASE_URL
-      },
-      !isEmpty(admin.apps) ? randomString.generate() : undefined
-    );
-    FirebaseDb.connect(admin.database());
-    console.log(`Database Url: ${process.env.FIREBASE_DATABASE_URL}`);
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    FirebaseDb.connect(admin.firestore());
   });
 
   describe("Insert", () => {
-    let insertedId;
-
     it("should insert data into database with auto id generation, except date", async () => {
       const data = {
         string: "Testing data",
@@ -85,9 +81,9 @@ describe("FirebaseDb", () => {
         arrayOfNumbers: [1, 2, 3],
         arrayOfObjects: [{ objId: 1 }, { objId: 2 }, { objId: 3 }]
       };
-      insertedId = await FirebaseDb.insert(testRef, data);
+      let insertedId = await FirebaseDb.insert(testCollection, data);
 
-      const fetchResult = await fetchFromDatabase(insertedId);
+      const fetchResult = await fetchDocument(insertedId);
       expect(fetchResult).to.deep.equal({
         id: insertedId,
         string: "Testing data",
@@ -107,7 +103,7 @@ describe("FirebaseDb", () => {
       });
     });
 
-    it("should convert date into number with type and insert it into database", async () => {
+    it("should insert data into database with date", async () => {
       const now = new Date();
       const data = {
         string: "Testing data",
@@ -119,26 +115,17 @@ describe("FirebaseDb", () => {
           }
         }
       };
-      insertedId = await FirebaseDb.insert(testRef, data);
+      let insertedId = await FirebaseDb.insert(testCollection, data);
 
-      const fetchResult = await fetchFromDatabase(insertedId);
+      const fetchResult = await fetchDocument(insertedId);
       expect(fetchResult).to.deep.equal({
         id: insertedId,
         string: "Testing data",
-        date: {
-          value: now.getTime(),
-          type: "date"
-        },
+        date: now,
         object: {
-          dateProp: {
-            value: now.getTime(),
-            type: "date"
-          },
+          dateProp: now,
           nestedObject: {
-            moreDateProp: {
-              value: now.getTime(),
-              type: "date"
-            }
+            moreDateProp: now
           }
         }
       });
@@ -149,9 +136,9 @@ describe("FirebaseDb", () => {
         id: "previousId",
         string: "some text"
       };
-      insertedId = await FirebaseDb.insert(testRef, data);
+      let insertedId = await FirebaseDb.insert(testCollection, data);
 
-      const fetchResult = await fetchFromDatabase(insertedId);
+      const fetchResult = await fetchDocument(insertedId);
       expect(fetchResult).to.deep.equal({
         id: insertedId,
         string: "some text"
@@ -159,50 +146,49 @@ describe("FirebaseDb", () => {
     });
 
     it("should throw error if null or undefined is inserted", async () => {
-      const insertNull = () => FirebaseDb.insert(testRef, null);
+      const insertNull = () => FirebaseDb.insert(testCollection, null);
       expect(insertNull).to.throw(ReferenceError);
 
-      const insertUndefined = () => FirebaseDb.insert(testRef, undefined);
+      const insertUndefined = () => FirebaseDb.insert(testCollection, undefined);
       expect(insertUndefined).to.throw(ReferenceError);
 
-      const refResult = await fetchRefFromDatabase();
-      expect(refResult).to.be.null;
+      const refResult = await fetchAllDocuments();
+      expect(refResult).to.deep.equal([]);
     });
 
-    afterEach(() => {
-      clearDb();
+    afterEach(async () => {
+      return await clearDb();
     });
   });
 
+
   describe("Get with id", () => {
     it("should throw reference error for null / undefined id", () => {
-      expect(() => FirebaseDb.get(testRef, null)).to.throw(ReferenceError);
-      expect(() => FirebaseDb.get(testRef, undefined)).to.throw(ReferenceError);
+      expect(() => FirebaseDb.get(testCollection, null)).to.throw(ReferenceError);
+      expect(() => FirebaseDb.get(testCollection, undefined)).to.throw(ReferenceError);
     });
 
     describe("Already populated with data", () => {
-      before(() => {
-        const db = admin.database();
-        const ref = path.posix.join(testRefPrefix, testRef);
-        db.ref(ref).set({
-          testId1: {
-            id: "testId1",
-            title: "hello1",
-            number: 123,
-            float: 3.141592654
-          },
-          testId2: {
-            id: "testId2",
-            title: "hello2",
-            number: 1934,
-            float: 2.54
-          }
+      before(async () => {
+        const db = admin.firestore();
+        await db.collection(testCollection).doc('testId1').set({
+          id: "testId1",
+          title: "hello1",
+          number: 123,
+          float: 3.141592654
+        });
+
+        await db.collection(testCollection).doc('testId2').set({
+          id: "testId2",
+          title: "hello2",
+          number: 1934,
+          float: 2.54
         });
       });
 
       it("should get specific data with id from database", async () => {
         {
-          const result = await FirebaseDb.get(testRef, "testId1");
+          const result = await FirebaseDb.get(testCollection, "testId1");
           expect(result).to.deep.equal({
             id: "testId1",
             title: "hello1",
@@ -211,7 +197,7 @@ describe("FirebaseDb", () => {
           });
         }
         {
-          const result = await FirebaseDb.get(testRef, "testId2");
+          const result = await FirebaseDb.get(testCollection, "testId2");
           expect(result).to.deep.equal({
             id: "testId2",
             title: "hello2",
@@ -222,19 +208,19 @@ describe("FirebaseDb", () => {
       });
 
       it("should be rejected with reference error for unknown id", () => {
-        expect(FirebaseDb.get(testRef, "unknownId")).to.rejectedWith(
+        expect(FirebaseDb.get(testCollection, "unknownId")).to.rejectedWith(
           ReferenceError
         );
       });
 
-      after(() => {
-        clearDb();
+      after(async () => {
+        return await clearDb();
       });
     });
 
     describe("Without data", () => {
       it("should be rejected with reference error for any id", () => {
-        expect(FirebaseDb.get(testRef, "anyId")).to.rejectedWith(
+        expect(FirebaseDb.get(testCollection, "anyId")).to.rejectedWith(
           ReferenceError
         );
       });
@@ -243,23 +229,21 @@ describe("FirebaseDb", () => {
 
   describe("Get All", () => {
     describe("Already populated with data", () => {
-      before(() => {
-        const db = admin.database();
-        const ref = path.posix.join(testRefPrefix, testRef);
-        db.ref(ref).set({
-          testId1: {
-            id: "testId1",
-            title: "hello1"
-          },
-          testId2: {
-            id: "testId2",
-            title: "hello2"
-          }
+      before(async () => {
+        const db = admin.firestore();
+        await db.collection(testCollection).doc('testId1').set({
+          id: "testId1",
+          title: "hello1"
+        });
+
+        await db.collection(testCollection).doc('testId2').set({
+          id: "testId2",
+          title: "hello2"
         });
       });
 
       it("should get all from database", async () => {
-        const result = await FirebaseDb.getAll(testRef);
+        const result = await FirebaseDb.getAll(testCollection);
         expect(result).not.to.be.null;
         expect(result).to.deep.equals([
           {
@@ -273,14 +257,14 @@ describe("FirebaseDb", () => {
         ]);
       });
 
-      after(() => {
-        clearDb();
+      after(async () => {
+        await clearDb();
       });
     });
 
     describe("Without data", () => {
       it("get all should return empty array", async () => {
-        const result = await FirebaseDb.getAll(testRef);
+        const result = await FirebaseDb.getAll(testCollection);
         expect(result).to.be.deep.equal([]);
       });
     });
@@ -288,28 +272,26 @@ describe("FirebaseDb", () => {
 
   describe("Update", () => {
     describe("Already populated with data", () => {
-      before(() => {
-        const db = admin.database();
-        const ref = path.posix.join(testRefPrefix, testRef);
-        db.ref(ref).set({
-          testId1: {
-            id: "testId1",
-            title: "hello1"
-          },
-          testId2: {
-            id: "testId2",
-            title: "hello2"
-          }
+      before(async () => {
+        const db = admin.firestore();
+        await db.collection(testCollection).doc('testId1').set({
+          id: "testId1",
+          title: "hello1"
+        });
+
+        await db.collection(testCollection).doc('testId2').set({
+          id: "testId2",
+          title: "hello2"
         });
       });
 
       it("should update by id", async () => {
-        await FirebaseDb.update(testRef, "testId2", {
+        await FirebaseDb.update(testCollection, "testId2", {
           id: "testId2",
           title: "helloEdited",
           moreProp: 123123
         });
-        const result = await fetchFromDatabase("testId2");
+        const result = await fetchDocument("testId2");
         expect(result).to.deep.equal({
           id: "testId2",
           title: "helloEdited",
@@ -318,7 +300,7 @@ describe("FirebaseDb", () => {
       });
 
       it("should throw reference error if unknown id", async () => {
-        const unknownIdAction = FirebaseDb.update(testRef, "unknownId", {
+        const unknownIdAction = FirebaseDb.update(testCollection, "unknownId", {
           id: "unknownId",
           title: "helloEdited",
           moreProp: 123123
@@ -327,12 +309,12 @@ describe("FirebaseDb", () => {
       });
 
       it("should not update id", async () => {
-        await FirebaseDb.update(testRef, "testId2", {
+        await FirebaseDb.update(testCollection, "testId2", {
           id: "editedId",
           title: "helloEdited",
           moreProp: 123123
         });
-        const result = await fetchFromDatabase("testId2");
+        const result = await fetchDocument("testId2");
         expect(result).to.deep.equal({
           id: "testId2",
           title: "helloEdited",
@@ -340,118 +322,105 @@ describe("FirebaseDb", () => {
         });
       });
 
-      after(() => {
-        clearDb();
+      after(async () => {
+        await clearDb();
       });
     });
   });
 
   describe("Delete with id", () => {
     describe("Already populated with data", () => {
-      beforeEach(() => {
-        const db = admin.database();
-        const ref = path.posix.join(testRefPrefix, testRef);
-        db.ref(ref).set({
-          testId1: {
-            id: "testId1",
-            title: "hello1"
-          },
-          testId2: {
-            id: "testId2",
-            title: "hello2"
-          }
+      beforeEach(async () => {
+        const db = admin.firestore();
+        await db.collection(testCollection).doc('testId1').set({
+          id: "testId1",
+          title: "hello1"
+        });
+
+        await db.collection(testCollection).doc('testId2').set({
+          id: "testId2",
+          title: "hello2"
         });
       });
 
       it("should delete specific id", async () => {
-        await FirebaseDb.delete(testRef, "testId2");
-        const result = await fetchRefFromDatabase();
-        expect(result).to.deep.equal({
-          testId1: {
-            id: "testId1",
-            title: "hello1"
-          }
-        });
+        await FirebaseDb.delete(testCollection, "testId2");
+        const result = await fetchAllDocuments();
+        expect(result).to.deep.equal([{
+          id: "testId1",
+          title: "hello1"
+        }]);
       });
 
       it("should throw reference error for unknown id", async () => {
-        expect(FirebaseDb.delete(testRef, "unknownId")).to.rejectedWith(
+        expect(FirebaseDb.delete(testCollection, "unknownId")).to.rejectedWith(
           ReferenceError
         );
       });
 
-      afterEach(() => {
-        clearDb();
+      afterEach(async () => {
+        await clearDb();
       });
     });
   });
 
   describe("Delete All", () => {
     describe("Already populated with data", () => {
-      before(() => {
-        const db = admin.database();
-        const ref = path.posix.join(testRefPrefix, testRef);
-        db.ref(ref).set({
-          testId1: {
-            id: "testId1",
-            title: "hello1"
-          },
-          testId2: {
-            id: "testId2",
-            title: "hello2"
-          }
+      before(async () => {
+        const db = admin.firestore();
+        await db.collection(testCollection).doc('testId1').set({
+          id: "testId1",
+          title: "hello1"
+        });
+
+        await db.collection(testCollection).doc('testId2').set({
+          id: "testId2",
+          title: "hello2"
         });
       });
 
       it("should delete all within ref", async () => {
-        await FirebaseDb.deleteAll(testRef);
-        const result = await fetchRefFromDatabase();
-        expect(result).to.be.null;
+        await FirebaseDb.deleteAll(testCollection);
+        const result = await fetchAllDocuments();
+        expect(result).to.deep.equal([]);
       });
 
-      after(() => {
-        clearDb();
+      after(async () => {
+        await clearDb();
       });
     });
   });
 
   describe("Exists", () => {
-    before(() => {
-      const db = admin.database();
-      const ref = path.posix.join(testRefPrefix, testRef);
-      db.ref(ref).set({
-        testId1: {
-          id: "testId1",
-          title: "hello1"
-        },
-        testId2: {
-          id: "testId2",
-          title: "hello2"
-        }
+    before(async () => {
+      const db = admin.firestore();
+      await db.collection(testCollection).doc('testId1').set({
+        id: "testId1",
+        title: "hello1"
+      });
+
+      await db.collection(testCollection).doc('testId2').set({
+        id: "testId2",
+        title: "hello2"
       });
     });
 
-    it("should be true for populated ref", async () => {
-      const exists = await FirebaseDb.exists(testRef);
-      expect(exists).to.be.true;
-    });
-
     it("should be true for specific id", async () => {
-      const exists = await FirebaseDb.exists(testRef, "testId1");
+      const exists = await FirebaseDb.exists(testCollection, "testId1");
       expect(exists).to.be.true;
     });
 
     it("should be false for unknown id", async () => {
-      const exists = await FirebaseDb.exists(testRef, "unknownId");
+      const exists = await FirebaseDb.exists(testCollection, "unknownId");
       expect(exists).to.be.false;
     });
 
-    after(() => {
-      clearDb();
+    after(async () => {
+      await clearDb();
     });
   });
 
-  after(() => {
-    clearDb();
+  after(async () => {
+    await clearDb();
   });
 });
